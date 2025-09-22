@@ -60,10 +60,7 @@ int gbv_open(Library *lib, const char *filename){
 }
 
 int gbv_add(Library *lib, const char *archive, const char *docname){
-    if(!archive){
-        gbv_create(archive);
-        return 0;
-    }
+    
 
     return 0;
 }
@@ -87,7 +84,14 @@ int gbv_list(const Library *lib){
     return 0;
 }
 
+// Função tá estranha, como será aberto o arquivo sem o nome?
 int gbv_view(const Library *lib, const char *docname){
+    FILE *arc = fopen(docname, "rb");
+    if (!arc)
+        return -1;
+    
+    
+    
     return 0;
 }
 
