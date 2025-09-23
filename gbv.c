@@ -2,6 +2,7 @@
 #include "util.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
     long offset;
@@ -60,13 +61,80 @@ int gbv_open(Library *lib, const char *filename){
 }
 
 int gbv_add(Library *lib, const char *archive, const char *docname){
-    
+    FILE *arc = fopen(archive, "r+b");
+    FILE *doc = fopen(docname, "rb");
+    char buffer[BUFFER_SIZE];
+    size_t bytes_readed;
 
+    if (!arc || !doc)
+        return -2;
+    
+    // procura onde o novo arquivo sera inserido
+    SBlock super_bloco;
+    fread(&super_bloco, sizeof(SBlock), 1, arc);
+    fseek(arc, super_bloco.offset, SEEK_SET);
+    
+    // armeza o arquivo no final da area de documento usando buffer
+    while ((bytes_readed = fread(buffer, 1, BUFFER_SIZE, doc)) > 0)
+        fwrite(buffer, 1, bytes_readed, arc);
+    
+    // aumenta o vetor de metadados
+    Document *ptr_tmp;
+    if(!(ptr_tmp= realloc(lib->docs, sizeof(Document) * (lib->count + 1))))
+        return -1;
+    
+    lib->docs = ptr_tmp;
+    // adiciona os metadados do novo documento ao vetor (RAM)
+    snprintf(lib->docs[lib->count].name, MAX_NAME, "%s", docname);
+    lib->docs[lib->count].date = time(NULL);
+    lib->docs[lib->count].size = ftell(doc);
+    lib->docs[lib->count].offset = super_bloco.offset;
+    lib->count++;
+
+    // atualiza os metadados dos arquivos em disco
+    fseek(arc, super_bloco.offset + lib->docs[lib->count - 1].size, SEEK_SET);
+    fwrite(lib->docs, sizeof(Document), lib->count, arc);
+
+    // atualiza o super bloco em disco
+    super_bloco.count++;
+    super_bloco.offset += lib->docs[lib->count - 1].size;
+    fseek(arc, 0, SEEK_SET);
+    fwrite(&super_bloco, sizeof(SBlock), 1, arc);
+    
+    fclose(doc);
+    fclose(arc);
+    
     return 0;
 }
 
+// Mesma situacao do view, como sera salvo o arquivo sem o nome em questao
 int gbv_remove(Library *lib, const char *docname){
-    return 0;
+    long index_removed = -1;
+    // verifica se o docname existe na biblioteca
+    for (long i = 0; i < lib->count; i++){
+        if(strcmp(docname, lib->docs[i].name) == 0){
+            index_removed = i;
+            break;
+        }
+    }
+
+    // remove o elemento se existir
+    if (index_removed >= 0){
+        for (long i = index_removed; i < (lib->count - 1); i++)
+            lib->docs[i] = lib->docs[i+1];
+    
+        lib->count--;
+        Document *tmp_ptr;
+        if(!(tmp_ptr = realloc(lib->docs, sizeof(Document) * lib->count)))
+            return -2;
+
+        // escreve no disco com o fwrite, mas falta o nome...
+        // atualiza o superbloco tbm, mas falta o nome tbm...
+        
+    }
+
+    // nao encontrado
+    return -1;
 }
 
 int gbv_list(const Library *lib){
