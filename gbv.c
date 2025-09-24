@@ -11,6 +11,14 @@ typedef struct {
     int count;
 } SBlock;
 
+void write_bytes(FILE *arc, FILE *doc){
+    char buffer[BUFFER_SIZE];
+    long bytes_readed;
+
+    while((bytes_readed = fread(buffer, 1, BUFFER_SIZE, doc)) > 0)
+        fwrite(buffer, 1, bytes_readed, arc);
+}
+
 int gbv_create(const char *filename){
 
     FILE *arc = fopen(filename, "wb");
@@ -66,18 +74,16 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
     FILE *arc = fopen(archive, "r+b");
     FILE *doc = fopen(docname, "rb");
     char buffer[BUFFER_SIZE];
-    size_t bytes_readed;
 
     if (!arc || !doc)
         return -2;
 
-    // procura onde o novo arquivo sera inserido (offset do superbloco)
+    // carrega informacoes do superbloco
     SBlock super_bloco;
     fread(&super_bloco, sizeof(SBlock), 1, arc);
-    fseek(arc, super_bloco.offset, SEEK_SET);
 
     // verifica se o arquivo ja existe
-    long index_doc_equal = -1;
+    int index_doc_equal = -1;
     for (int i = 0; i < lib->count; i++){
         if(strcmp(docname, lib->docs[i].name) == 0){
             index_doc_equal = i;
@@ -85,9 +91,7 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         }
     }
 
-    long doc_new_size = -1;
-    long doc_old_size = lib->docs[index_doc_equal].size;
-    long doc_old_offset = lib->docs[index_doc_equal].offset; 
+    long doc_new_size, doc_old_size, doc_old_offset;
     // arquivo ja existe, substitui
     if (index_doc_equal >= 0){
         doc_old_size = lib->docs[index_doc_equal].size;
@@ -101,9 +105,7 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         // arquivo igual com mesmo tamanho
         if(doc_new_size == doc_old_size){
             fseek(arc, doc_old_offset, SEEK_SET);
-            while((bytes_readed = fread(buffer, 1, BUFFER_SIZE, doc)) > 0)
-                fwrite(buffer, 1, bytes_readed, arc);
-            
+            write_bytes(arc, doc);
             lib->docs[index_doc_equal].date = time(NULL);
         }
         else{
@@ -131,8 +133,7 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
 
                 // escreve o novo documento substituindo o antigo de mesmo nome
                 fseek(arc, doc_old_offset, SEEK_SET);
-                while((bytes_readed = fread(buffer, 1, BUFFER_SIZE, doc)) > 0)
-                    fwrite(buffer, 1, bytes_readed, arc);
+                write_bytes(arc, doc);
 
                 // atualiza os metadados do documento novo e dos documentos movidos
                 for (int i = index_doc_equal+1; i < lib->count; i++)
@@ -148,10 +149,9 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
             else{
                 // substitui o antigo documento pelo novo. Um "buraco" eh criado
                 fseek(arc, doc_old_offset, SEEK_SET);
-                while((bytes_readed = fread(buffer, 1, BUFFER_SIZE, doc)) > 0)
-                    fwrite(buffer, 1, bytes_readed, arc);
+                write_bytes(arc, doc);
             
-                long start_write_position = start_read_position - differencial;
+                long start_write_position = start_read_position + differencial;
                 long bytes_moved = 0;
 
                 // tapando o "buraco"
@@ -171,22 +171,26 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
 
                 // atualizando os metadados
                 for(int i = index_doc_equal + 1; i < lib->count; i++){
-                    lib->docs[i].offset -= differencial;
+                    lib->docs[i].offset += differencial;
                 }
-
-                lib->docs[index_doc_equal].date = time(NULL);
-                lib->docs[index_doc_equal].size = doc_new_size;
                 
                 // atualiza o superbloco
-                super_bloco.offset -= differencial;
+                super_bloco.offset += differencial;
+
+                // trunca o arquivo
+                int fd = fileno(arc);
+                ftruncate(fd, super_bloco.offset + lib->count * sizeof(Document));
             }
+            // atualiza os metadados
+            lib->docs[index_doc_equal].date = time(NULL);
+            lib->docs[index_doc_equal].size = doc_new_size;
         }
     }
     // novo arquivo
     else{
         // armeza o arquivo no final da area de documento usando buffer
-        while ((bytes_readed = fread(buffer, 1, BUFFER_SIZE, doc)) > 0)
-            fwrite(buffer, 1, bytes_readed, arc);
+        fseek(arc, super_bloco.offset, SEEK_SET);
+        write_bytes(arc, doc);
         
         // aumenta o vetor de metadados
         Document *ptr_tmp;
@@ -201,22 +205,17 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         lib->docs[lib->count].offset = super_bloco.offset;
         lib->count++;
 
-        // atualiza o super bloco em disco
+        // atualiza o super bloco
         super_bloco.count++;
         super_bloco.offset += lib->docs[lib->count - 1].size;
         
     }
 
+    // atualiza os dados modificados em disco
     fseek(arc, super_bloco.offset, SEEK_SET);
     fwrite(lib->docs, sizeof(Document), lib->count, arc);
-
     fseek(arc, 0, SEEK_SET);
     fwrite(&super_bloco, sizeof(SBlock), 1, arc);
-
-    if ((doc_new_size != -1) && (doc_new_size < doc_old_size)){
-        int fd = fileno(arc);
-        ftruncate(fd, super_bloco.offset + lib->count * sizeof(Document));
-    }
     
     fclose(doc);
     fclose(arc);
