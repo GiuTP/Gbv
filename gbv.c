@@ -1,5 +1,5 @@
 #include "gbv.h"
-#include "util.h"   // format_date, write_bytes
+#include "util.h"   // format_date
 #include <stdio.h>  // fopen, fclose, fread, fwrite, fseek, ftell, printf
 #include <stdlib.h> // realloc
 #include <string.h> // strcmp
@@ -11,15 +11,53 @@ typedef struct {
     int count;
 } SBlock;
 
-int gbv_create(const char *filename){
+static FILE *lib_arc = NULL;
 
+void write_bytes(FILE *arc, FILE *doc){
+    char buffer[BUFFER_SIZE];
+    long bytes_readed;
+
+    while((bytes_readed = fread(buffer, 1, BUFFER_SIZE, doc)) > 0)
+        fwrite(buffer, 1, bytes_readed, arc);
+}
+
+void print_bytes(long lim_ceil, long offset){
+    long bytes_reamaining, bytes_to_read;
+    size_t bytes_readed;
+    char buffer[BUFFER_SIZE];
+
+    fseek(lib_arc, offset, SEEK_SET);
+    bytes_reamaining = lim_ceil - offset;
+    bytes_to_read = (bytes_reamaining > BUFFER_SIZE) ? BUFFER_SIZE : bytes_reamaining;
+    bytes_readed = fread(buffer, 1, bytes_to_read, lib_arc);
+
+    for(size_t i = 0; i < bytes_readed; i++){
+        printf("%02x ", (unsigned char)buffer[i]);
+        if ((i + 1) % 8 == 0)
+            printf(" ");
+        if ((i + 1) % 16 == 0)
+            printf("\n");
+    }
+
+    printf("\n");
+}
+
+// int check_fread(void *ptr, size_t size, size_t nmemb, FILE *stream){
+//     return (fread(ptr, size, nmemb, stream) == nmemb) ? 0 : -1;
+// }
+
+// int check_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream){
+//     return (fwrite(ptr, size, nmemb, stream) == nmemb) ? 0 : -1;
+// }
+
+int gbv_create(const char *filename){
     FILE *arc = fopen(filename, "wb");
+
     if(!arc)
         return -1;
     
     SBlock super_bloco = {sizeof(SBlock), 0};
-    if(fwrite(&super_bloco, sizeof(SBlock), 1, arc) != 1)
-        return -1;
+    fwrite(&super_bloco, sizeof(SBlock), 1, arc);
 
     fclose(arc);
 
@@ -27,11 +65,16 @@ int gbv_create(const char *filename){
 }
 
 int gbv_open(Library *lib, const char *filename){
-    FILE *arc = fopen(filename, "rb");
+    lib_arc = fopen(filename, "r+b");
+    FILE *arc = fopen(filename, "r+b");
 
     // arquivo é criado se não existir chamando gbv_create
-    if (!arc){
+    if (!lib_arc){
         if(gbv_create(filename) != 0)
+            return -2;
+
+        lib_arc = fopen(filename, "r+b");
+        if(!lib_arc)
             return -2;
 
         lib->count = 0;
@@ -40,12 +83,9 @@ int gbv_open(Library *lib, const char *filename){
         return 0;
     }
 
-    SBlock super_bloco;
     // dados iniciais do arquivo são lidos e feita alocações se existir
-    if(fread(&super_bloco, sizeof(SBlock), 1, arc) != 1){
-        fclose(arc);
-        return -1;
-    }
+    SBlock super_bloco;
+    fread(&super_bloco, sizeof(SBlock), 1, arc);
     
     if(super_bloco.count > 0){
         if(!(lib->docs = malloc(sizeof(Document) * super_bloco.count))){
@@ -58,13 +98,9 @@ int gbv_open(Library *lib, const char *filename){
 
     lib->count = super_bloco.count;
     fseek(arc, super_bloco.offset, SEEK_SET);
-    if(fread(lib->docs, sizeof(Document), lib->count, arc) != lib->count){
-        fclose(arc);
-        return -1;
-    }
+    fread(lib->docs, sizeof(Document), super_bloco.count, arc);
 
     fclose(arc);
-    
     return 0;
 }
 
@@ -81,17 +117,15 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
     fread(&super_bloco, sizeof(SBlock), 1, arc);
 
     // verifica se o arquivo ja existe
-    int index_doc_equal = -1;
-    for (int i = 0; i < lib->count; i++){
-        if(strcmp(docname, lib->docs[i].name) == 0){
-            index_doc_equal = i;
+    long index_doc_equal;
+    for (index_doc_equal = 0; index_doc_equal < lib->count; index_doc_equal++){
+        if(strcmp(docname, lib->docs[index_doc_equal].name) == 0)
             break;
-        }
     }
 
     long doc_new_size, doc_old_size, doc_old_offset;
     // arquivo ja existe, substitui
-    if (index_doc_equal >= 0){
+    if (index_doc_equal != lib->count){
         doc_old_size = lib->docs[index_doc_equal].size;
         doc_old_offset = lib->docs[index_doc_equal].offset;
 
@@ -104,7 +138,6 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         if(doc_new_size == doc_old_size){
             fseek(arc, doc_old_offset, SEEK_SET);
             write_bytes(arc, doc);
-            lib->docs[index_doc_equal].date = time(NULL);
         }
         else{
             long differencial = doc_new_size - doc_old_size;
@@ -168,10 +201,9 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
                 }
 
                 // atualizando os metadados
-                for(int i = index_doc_equal + 1; i < lib->count; i++){
+                for(int i = index_doc_equal + 1; i < lib->count; i++)
                     lib->docs[i].offset += differencial;
-                }
-                
+
                 // atualiza o superbloco
                 super_bloco.offset += differencial;
 
@@ -179,10 +211,9 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
                 int fd = fileno(arc);
                 ftruncate(fd, super_bloco.offset + lib->count * sizeof(Document));
             }
-            // atualiza os metadados
-            lib->docs[index_doc_equal].date = time(NULL);
-            lib->docs[index_doc_equal].size = doc_new_size;
         }
+        lib->docs[index_doc_equal].date = time(NULL);
+        lib->docs[index_doc_equal].size = doc_new_size;
     }
     // novo arquivo
     else{
@@ -194,6 +225,9 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         Document *ptr_tmp;
         if(!(ptr_tmp= realloc(lib->docs, sizeof(Document) * (lib->count + 1)))){
             free(lib->docs);
+            lib->docs = NULL;
+            lib->count = 0;
+
             fclose(arc);
             fclose(doc);
             return -1;
@@ -225,54 +259,78 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
     return 0;
 }
 
-int gbv_remove(Library *lib, const char *archive, const char *docname){
-    long index_removed = -1;
+int gbv_remove(Library *lib, const char *docname){
+    long index_removed;
     // verifica se o docname existe na biblioteca
-    for (long i = 0; i < lib->count; i++){
-        if(strcmp(docname, lib->docs[i].name) == 0){
-            index_removed = i;
+    for (index_removed = 0; index_removed < lib->count; index_removed++){
+        if(strcmp(docname, lib->docs[index_removed].name) == 0)
             break;
-        }
     }
 
-    // remove o elemento se existir
-    if (index_removed >= 0){
-        for (long i = index_removed; i < (lib->count - 1); i++)
-            lib->docs[i] = lib->docs[i+1];
+    // arquivo nao encontrado
+    if(index_removed == lib->count){
+        printf("Arquivo %s nao existe na biblioteca\n", docname);
+        return -1;
+    }
+
+    if(!lib_arc)
+        return -2;
+
+    SBlock super_bloco;
+    fseek(lib_arc, 0, SEEK_SET);
+    fread(&super_bloco, sizeof(Document), 1, lib_arc);
+
+    long doc_size = lib->docs[index_removed].size;
+    long read_position = lib->docs[index_removed].offset + doc_size;
+    long write_position = read_position - doc_size;
+    long total_bytes_to_move = super_bloco.offset - read_position;
+    long bytes_moved = 0;
+
+    // tampa o buraco deixado pelo documento removido
+    while (bytes_moved < total_bytes_to_move){
+        char buffer[BUFFER_SIZE];
+
+        long bytes_remaining = total_bytes_to_move - bytes_moved;
+        long size_to_move = bytes_remaining > BUFFER_SIZE ? BUFFER_SIZE : bytes_remaining;
+
+        read_position += bytes_moved;
+        write_position += bytes_moved;
+        fseek(lib_arc, read_position, SEEK_SET);
+        fread(buffer, 1, size_to_move, lib_arc);
+        fseek(lib_arc, write_position, SEEK_SET);
+        fwrite(buffer, 1, size_to_move, lib_arc);
+
+        bytes_moved += size_to_move;
+    }
     
-        lib->count--;
-        Document *tmp_ptr;
-        if(!(tmp_ptr = realloc(lib->docs, sizeof(Document) * lib->count))){
-            free(lib->docs);
-            return -2;
-        }
-        lib->docs = tmp_ptr;
-
-        FILE *arc = fopen(archive, "r+b");
-        if(!arc)
-            return -2;
-
-        SBlock super_bloco;
-        fread(&super_bloco, sizeof(SBlock), 1, arc);
-
-        // atualiza superbloco e area de diretorio
-        super_bloco.count = lib->count;
-        fseek(arc, 0, SEEK_SET);
-        fwrite(&super_bloco, sizeof(SBlock), 1, arc);
-        fseek(arc, super_bloco.offset, SEEK_SET);
-        fwrite(lib->docs, sizeof(Document), lib->count, arc);
-
-        // trunca o arquivo
-        int fd = fileno(arc);
-        ftruncate(fd, super_bloco.offset + sizeof(Document) * lib->count);
-
-        fclose(arc);
-
-        return 0;
+    // diminui e atualizar os metadados
+    for (long i = index_removed; i < (lib->count - 1); i++){
+        lib->docs[i+1].offset -= doc_size;
+        lib->docs[i] = lib->docs[i+1];
     }
+    lib->count--;
 
-    // nao encontrado
-    return -1;
+    Document *tmp_ptr;
+    if((lib->count > 0) && !(tmp_ptr = realloc(lib->docs, sizeof(Document) * lib->count))){
+        free(lib->docs);
+        return -2;
+    }
+    lib->docs = tmp_ptr;    
+
+    // atualiza superbloco e area de diretorio
+    super_bloco.count = lib->count;
+    super_bloco.offset -= doc_size;
+
+    fseek(lib_arc, 0, SEEK_SET);
+    fwrite(&super_bloco, sizeof(SBlock), 1, lib_arc);
+    fseek(lib_arc, super_bloco.offset, SEEK_SET);
+    fwrite(lib->docs, sizeof(Document), lib->count, lib_arc);
+
+    // trunca o arquivo
+    int fd = fileno(lib_arc);
+    ftruncate(fd, super_bloco.offset + sizeof(Document) * lib->count);
+
+    return 0;
 }
 
 int gbv_list(const Library *lib){
@@ -288,66 +346,62 @@ int gbv_list(const Library *lib){
         printf(" %-9s %s\n", "Data:", date_readable);
         printf("-------------------\n");
     }
+
+    fclose(lib_arc);
     return 0;
 }
 
 // Função tá estranha, como será aberto o arquivo sem o nome?
-int gbv_view(const Library *lib, const char *archive, const char *docname){
-    int index;
-    for (index = 0; index < lib->count; index++){
-        if(strcmp(docname, lib->docs[index].name) == 0)
+int gbv_view(const Library *lib, const char *docname){
+    int index_view;
+    for (index_view = 0; index_view < lib->count; index_view++){
+        if(strcmp(docname, lib->docs[index_view].name) == 0)
             break;
     }
-    
-    if(index < lib->count){
-        FILE *arc = fopen(archive, "rb");
 
-        if (!arc)
-            return -2;
-
-        long current_offset = lib->docs[index].offset;
-        long lim_ceil = lib->docs[index].offset + lib->docs[index].size;
-        long lim_floor = current_offset;
-        char buffer[BUFFER_SIZE];
-
-        while(1){
-            long bytes_remaining, bytes_to_read;
-            size_t bytes_readed;
-
-            // mostra o conteudo do bloco
-            fseek(arc, current_offset, SEEK_SET);
-            bytes_remaining = lim_ceil - current_offset;
-            bytes_to_read = bytes_remaining > BUFFER_SIZE ? BUFFER_SIZE : bytes_remaining;
-            bytes_readed = fread(buffer, 1, bytes_to_read, arc);
-            fwrite(buffer, 1, bytes_readed, stdout);
-            printf("\n");
-
-            // escolhe o proximo bloco
-            char op;
-            scanf(" %c", &op);
-            // checa se o bloco sera imprimido ou atingiu algum limite
-            if(op == 'n'){
-                if(current_offset + BUFFER_SIZE >= lim_ceil)
-                    printf("(Fim do documento)\n");
-                else
-                    current_offset += BUFFER_SIZE;
-            }
-            else if(op == 'p'){
-                if(current_offset - BUFFER_SIZE < lim_floor)
-                    printf("(Inicio do documento)\n");
-                else
-                    current_offset -= BUFFER_SIZE;
-            }
-            else if(op == 'q')
-                break;
-        }
-        
-        fclose(arc);
-        return 0;
+    if(index_view == lib->count){
+        printf("Arquivo %s nao existe na biblioteca\n", docname);
+        fclose(lib_arc);
+        return -1;
     }
+
+    if(!lib_arc)
+        return -2;
+
+    long lim_floor, current_offset;
+    lim_floor = current_offset = lib->docs[index_view].offset;
+    long lim_ceil = lib->docs[index_view].offset + lib->docs[index_view].size;
     
-    printf("Arquivo %s nao existe na biblioteca\n", docname);
-    return -1;
+    print_bytes(lim_ceil, current_offset);
+
+    int keep_reading = 1;
+    while(keep_reading){
+        char op;
+        scanf(" %c", &op);
+        switch (op){
+        case 'n':
+            if(current_offset + BUFFER_SIZE < lim_ceil){
+                current_offset += BUFFER_SIZE;
+                print_bytes(lim_ceil, current_offset);
+            }
+            break;
+        case 'p':
+            if(current_offset - BUFFER_SIZE >= lim_floor){
+                current_offset -= BUFFER_SIZE;
+                print_bytes(lim_ceil, current_offset);
+            }
+            break;
+        case 'q':
+            keep_reading = 0;
+            break;
+        default:
+            printf("Opcao invalida\n");
+            break;
+        }
+    }
+
+    fclose(lib_arc);
+    return 0;
 }
 
 int gbv_order(Library *lib, const char *archive, const char *criteria){
