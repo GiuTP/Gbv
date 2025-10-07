@@ -41,7 +41,7 @@ void print_bytes(FILE *arc, long lim_ceil, long offset){
 }
 
 /* Retorna:
-    *-1: erro ao criar o arquivo;
+    *-1: erro ao criar o arquivo ou erro de leitura/escrita;
     * 0: criou com sucesso.          */
 int gbv_create(const char *filename){
     FILE *arc = fopen(filename, "wb");
@@ -50,7 +50,10 @@ int gbv_create(const char *filename){
         return -1;
     
     SBlock super_bloco = {sizeof(SBlock), 0};
-    fwrite(&super_bloco, sizeof(SBlock), 1, arc);
+    if(fwrite(&super_bloco, sizeof(SBlock), 1, arc) != 1){
+        fclose(arc);
+        return -1;
+    }
 
     fclose(arc);
 
@@ -58,13 +61,13 @@ int gbv_create(const char *filename){
 }
 
 /* Retorna
-    *-2: erro ao criar a arquivo .gbv;
+    *-2: erro ao criar a arquivo .gbv ou erro de leitura/escrita;
     *-1: erro de alocação do vetor de documentos;
     * 0: abriu com sucesso.                          */
 int gbv_open(Library *lib, const char *filename){
     FILE *arc = fopen(filename, "r+b");
 
-    if (!arc){
+    if(!arc){
         if(gbv_create(filename) != 0)
             return -2;
 
@@ -75,12 +78,16 @@ int gbv_open(Library *lib, const char *filename){
     }
 
     SBlock super_bloco;
-    fread(&super_bloco, sizeof(SBlock), 1, arc);
-    
+    // leitura do superbloco
+    if(fread(&super_bloco, sizeof(SBlock), 1, arc) != 1){
+        fclose(arc);
+        return -1;
+    }
+    // leitura dos metadados
     if(super_bloco.count > 0){
         if(!(lib->docs = malloc(sizeof(Document) * super_bloco.count))){
             fclose(arc);
-            return -3;
+            return -1;
         }
     }
     else
@@ -88,7 +95,10 @@ int gbv_open(Library *lib, const char *filename){
 
     lib->count = super_bloco.count;
     fseek(arc, super_bloco.offset, SEEK_SET);
-    fread(&super_bloco, sizeof(SBlock), 1, arc);
+    if(fread(&super_bloco, sizeof(SBlock), 1, arc) != 1){
+        fclose(arc);
+        return -1;
+    }
 
     fclose(arc);
 
@@ -96,7 +106,7 @@ int gbv_open(Library *lib, const char *filename){
 }
 
 /* Retorna:
-    *-2: erro ao abri o arquivo ou documento;
+    *-2: erro ao abri o arquivo ou documento ou erro de leitura/escrita;
     *-1: erro ao realocar memória do vetor;
     * 0: adicionou com sucesso                  */
 int gbv_add(Library *lib, const char *archive, const char *docname){
@@ -104,11 +114,21 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
     FILE *doc = fopen(docname, "rb");
     char buffer[BUFFER_SIZE];
 
-    if (!arc || !doc)
+    if (!arc || !doc){
+        if(arc)
+            fclose(arc);
+        if(doc)
+            fclose(doc);
+
         return -2;
+    }
 
     SBlock super_bloco;
-    fread(&super_bloco, sizeof(SBlock), 1, arc);
+    if(fread(&super_bloco, sizeof(SBlock), 1, arc) != 1){
+        fclose(arc);
+        fclose(doc);
+        return -2;
+    }
 
     // procura se arquivo já existe
     long index_doc_equal;
@@ -150,9 +170,17 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
 
                     // blocos subsequentes são deslocados para frente
                     fseek(arc, read_position, SEEK_SET);
-                    fread(buffer, 1, size_to_move, arc);
+                    if(fread(buffer, 1, size_to_move, arc) != size_to_move){
+                        fclose(arc);
+                        fclose(doc);
+                        return -2;
+                    }
                     fseek(arc, write_position, SEEK_SET);
-                    fwrite(buffer, 1, size_to_move, arc);
+                    if(fwrite(buffer, 1, size_to_move, arc) != size_to_move){
+                        fclose(arc);
+                        fclose(doc);
+                        return -2;
+                    }
 
                     bytes_remaining -= size_to_move;
                 }
@@ -177,9 +205,17 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
                     read_position += bytes_moved;
                     write_position += bytes_moved;
                     fseek(arc, read_position, SEEK_SET);
-                    fread(buffer, 1, size_to_move, arc);
+                    if(fread(buffer, 1, size_to_move, arc) != size_to_move){
+                        fclose(arc);
+                        fclose(doc);
+                        return -2;
+                    }
                     fseek(arc, write_position, SEEK_SET);
-                    fwrite(buffer, 1, size_to_move, arc);
+                    if(fwrite(buffer, 1, size_to_move, arc) != size_to_move){
+                        fclose(arc);
+                        fclose(doc);
+                        return -2;
+                    }
 
                     bytes_moved += size_to_move;
                 }
@@ -202,16 +238,13 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         
         Document *ptr_tmp;
         if(!(ptr_tmp = realloc(lib->docs, sizeof(Document) * (lib->count + 1)))){
-            free(lib->docs);
-            lib->docs = NULL;
-            lib->count = 0;
-
             fclose(arc);
             fclose(doc);
             return -1;
         }
         lib->docs = ptr_tmp;
 
+        // metadados do novo documento
         snprintf(lib->docs[lib->count].name, MAX_NAME, "%s", docname);
         lib->docs[lib->count].size = ftell(doc);
         lib->docs[lib->count].date = time(NULL);
@@ -223,9 +256,17 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
     }
 
     fseek(arc, super_bloco.offset, SEEK_SET);
-    fwrite(lib->docs, sizeof(Document), lib->count, arc);
+    if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != lib->count){
+        fclose(arc);
+        fclose(doc);
+        return -2;
+    }
     fseek(arc, 0, SEEK_SET);
-    fwrite(&super_bloco, sizeof(SBlock), 1, arc);
+    if(fwrite(&super_bloco.count, sizeof(int), 1, arc) != 1){
+        fclose(arc);
+        fclose(doc);
+        return -2;
+    }
     
     fclose(doc);
     fclose(arc);
@@ -235,7 +276,7 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
 
 /* Retorna:
     *-3: arquivo não encontrado;
-    *-2: erro ao abrir o arquivo;
+    *-2: erro ao abrir o arquivo ou erro de leitura/escrita;
     *-1: erro ao realocar memória no vetor de documento;
     * 0: removeu com sucesso o documento.                   */
 int gbv_remove(Library *lib, const char *archive, const char *docname){
@@ -259,7 +300,10 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
 
     SBlock super_bloco;
     fseek(arc, 0, SEEK_SET);
-    fread(&super_bloco, sizeof(Document), 1, arc);
+    if(fread(&super_bloco.count, sizeof(Document), 1, arc) != 1){
+        fclose(arc);
+        return -2;   
+    }
 
     long doc_size = lib->docs[index_removed].size;
     long read_position = lib->docs[index_removed].offset + doc_size;
@@ -277,13 +321,20 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
         read_position += bytes_moved;
         write_position += bytes_moved;
         fseek(arc, read_position, SEEK_SET);
-        fread(buffer, 1, size_to_move, arc);
+        if(fread(buffer, 1, size_to_move, arc) != size_to_move){
+            fclose(arc);
+            return -2;
+        }
         fseek(arc, write_position, SEEK_SET);
-        fwrite(buffer, 1, size_to_move, arc);
+        if(fwrite(buffer, 1, size_to_move, arc) != size_to_move){
+            fclose(arc);
+            return -2;
+        }
 
         bytes_moved += size_to_move;
     }
 
+    // atualiza os metadados dos demais documentos
     for (long i = index_removed; i < (lib->count - 1); i++){
         lib->docs[i+1].offset -= doc_size;
         lib->docs[i] = lib->docs[i+1];
@@ -292,10 +343,6 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
 
     Document *tmp_ptr;
     if((lib->count > 0) && !(tmp_ptr = realloc(lib->docs, sizeof(Document) * lib->count))){
-        free(lib->docs);
-        lib->docs = NULL;
-        lib->count = 0;
-
         fclose(arc);
         return -1;
     }
@@ -305,9 +352,15 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
     super_bloco.offset -= doc_size;
 
     fseek(arc, 0, SEEK_SET);
-    fwrite(&super_bloco, sizeof(SBlock), 1, arc);
+    if(fwrite(&super_bloco, sizeof(SBlock), 1, arc) != 1){
+        fclose(arc);
+        return -2;
+    }
     fseek(arc, super_bloco.offset, SEEK_SET);
-    fwrite(lib->docs, sizeof(Document), lib->count, arc);
+    if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != lib->count){
+        fclose(arc);
+        return -2;   
+    }
 
     int fd = fileno(arc);
     ftruncate(fd, super_bloco.offset + sizeof(Document) * lib->count);
@@ -316,8 +369,12 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
 }
 
 /* Retorna:
-    *0: imprimiu os documentos com sucesso. */
+    *-1: erro na alocação do vetor de documentos;
+    * 0: imprimiu os documentos com sucesso.        */
 int gbv_list(const Library *lib){
+    if(!lib->docs)
+        return -1;
+    
     for(int i = 0; i < lib->count; i++){
         char date_readable[50];
         format_date(lib->docs[i].date, date_readable, 50);
@@ -386,9 +443,5 @@ int gbv_view(const Library *lib, const char *archive, const char *docname){
 
     fclose(arc);
 
-    return 0;
-}
-
-int gbv_order(Library *lib, const char *archive, const char *criteria){
     return 0;
 }
