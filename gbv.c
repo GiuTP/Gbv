@@ -11,6 +11,7 @@ typedef struct {
     int count;
 } SBlock;
 
+// Escreve os bytes do documento doc no arquivo arc
 void write_bytes(FILE *arc, FILE *doc){
     char buffer[BUFFER_SIZE];
     long bytes_readed;
@@ -19,6 +20,7 @@ void write_bytes(FILE *arc, FILE *doc){
         fwrite(buffer, 1, bytes_readed, arc);
 }
 
+// Imprime pares de bytes em hexadecimal na tela do arquivo arc
 void print_bytes(FILE *arc, long lim_ceil, long offset){
     long bytes_reamaining, bytes_to_read;
     size_t bytes_readed;
@@ -38,6 +40,24 @@ void print_bytes(FILE *arc, long lim_ceil, long offset){
     }
 
     printf("\n");
+}
+
+
+// Move os bytes de read_postion para write_position de tamanho size_move
+/* Retorna:
+    *-1: erro de leitura/escrita
+    * 0: moveu com sucesso                                                   */
+int move_bytes(FILE *arc, long size_move, long read_position, long write_position){
+    char buffer[BUFFER_SIZE];
+
+    fseek(arc, read_position, SEEK_SET);
+    if(fread(buffer, 1, size_move, arc) != size_move)
+        return -1;
+    fseek(arc, write_position, SEEK_SET);
+    if(fwrite(buffer, 1, size_move, arc) != size_move)
+        return -1;
+
+    return 0;
 }
 
 /* Retorna:
@@ -95,7 +115,7 @@ int gbv_open(Library *lib, const char *filename){
 
     lib->count = super_bloco.count;
     fseek(arc, super_bloco.offset, SEEK_SET);
-    if(fread(&super_bloco, sizeof(SBlock), 1, arc) != 1){
+    if(fread(lib->docs, sizeof(Document), super_bloco.count, arc) != super_bloco.count){
         fclose(arc);
         return -1;
     }
@@ -112,7 +132,6 @@ int gbv_open(Library *lib, const char *filename){
 int gbv_add(Library *lib, const char *archive, const char *docname){
     FILE *arc = fopen(archive, "r+b");
     FILE *doc = fopen(docname, "rb");
-    char buffer[BUFFER_SIZE];
 
     if (!arc || !doc){
         if(arc)
@@ -123,12 +142,13 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         return -2;
     }
 
-    SBlock super_bloco;
-    if(fread(&super_bloco, sizeof(SBlock), 1, arc) != 1){
-        fclose(arc);
-        fclose(doc);
-        return -2;
+    long total_offset;
+    if(lib->count > 0){
+        Document last_doc = lib->docs[lib->count - 1];
+        total_offset = last_doc.offset + last_doc.size;
     }
+    else
+        total_offset = sizeof(SBlock);
 
     // procura se arquivo já existe
     long index_doc_equal;
@@ -156,7 +176,7 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
             long bytes_remaining, read_position, write_position;
             long differencial = doc_new_size - doc_old_size;
             long start_read_position = doc_old_offset + doc_old_size;
-            long total_bytes_to_move = super_bloco.offset - start_read_position;
+            long total_bytes_to_move = total_offset - start_read_position;
 
             // documento de tamanho maior
             if(doc_new_size > doc_old_size){; 
@@ -169,22 +189,13 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
                     write_position = read_position + differencial;
 
                     // blocos subsequentes são deslocados para frente
-                    fseek(arc, read_position, SEEK_SET);
-                    if(fread(buffer, 1, size_to_move, arc) != size_to_move){
+                    if(move_bytes(arc, size_to_move, read_position, write_position) != 0){
                         fclose(arc);
                         fclose(doc);
                         return -2;
                     }
-                    fseek(arc, write_position, SEEK_SET);
-                    if(fwrite(buffer, 1, size_to_move, arc) != size_to_move){
-                        fclose(arc);
-                        fclose(doc);
-                        return -2;
-                    }
-
                     bytes_remaining -= size_to_move;
                 }
-
                 fseek(arc, doc_old_offset, SEEK_SET);
                 write_bytes(arc, doc);
             }
@@ -193,8 +204,7 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
                 fseek(arc, doc_old_offset, SEEK_SET);
                 write_bytes(arc, doc);
                 
-                read_position = start_read_position;
-                write_position = start_read_position + differencial;
+                long start_write_position = start_read_position + differencial;
                 long bytes_moved = 0;
 
                 // preenche o espaço deixado pelo documento antigo
@@ -202,38 +212,30 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
                     bytes_remaining = total_bytes_to_move - bytes_moved;
                     long size_to_move = bytes_remaining > BUFFER_SIZE ? BUFFER_SIZE : bytes_remaining;
 
-                    read_position += bytes_moved;
-                    write_position += bytes_moved;
-                    fseek(arc, read_position, SEEK_SET);
-                    if(fread(buffer, 1, size_to_move, arc) != size_to_move){
-                        fclose(arc);
-                        fclose(doc);
-                        return -2;
-                    }
-                    fseek(arc, write_position, SEEK_SET);
-                    if(fwrite(buffer, 1, size_to_move, arc) != size_to_move){
-                        fclose(arc);
-                        fclose(doc);
-                        return -2;
-                    }
+                    read_position = start_read_position + bytes_moved;
+                    write_position = start_write_position + bytes_moved;
 
+                    // blocos subsequentes são deslocados para trás
+                    if(move_bytes(arc, size_to_move, read_position, write_position) != 0){
+                        fclose(arc);
+                        fclose(doc);
+                        return -2;
+                    }                    
                     bytes_moved += size_to_move;
                 }
-
+                total_offset += differencial;
                 int fd = fileno(arc);
-                ftruncate(fd, super_bloco.offset + lib->count * sizeof(Document));
+                ftruncate(fd, total_offset + lib->count * sizeof(Document));
             }
             for(int i = index_doc_equal + 1; i < lib->count; i++)
                     lib->docs[i].offset += differencial;
-
-            super_bloco.offset += differencial;
         }
         lib->docs[index_doc_equal].date = time(NULL);
         lib->docs[index_doc_equal].size = doc_new_size;
     }
     // adição em caso de novo arquivo
     else{
-        fseek(arc, super_bloco.offset, SEEK_SET);
+        fseek(arc, total_offset, SEEK_SET);
         write_bytes(arc, doc);
         
         Document *ptr_tmp;
@@ -248,21 +250,29 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         snprintf(lib->docs[lib->count].name, MAX_NAME, "%s", docname);
         lib->docs[lib->count].size = ftell(doc);
         lib->docs[lib->count].date = time(NULL);
-        lib->docs[lib->count].offset = super_bloco.offset;
+        lib->docs[lib->count].offset = total_offset;
         lib->count++;
-
-        super_bloco.count++;
-        super_bloco.offset += lib->docs[lib->count - 1].size;
     }
 
-    fseek(arc, super_bloco.offset, SEEK_SET);
+    fflush(arc);
+
+    SBlock novo_super_bloco;
+    novo_super_bloco.count = lib->count;
+    if(lib->count > 0){
+        Document last_doc = lib->docs[lib->count - 1];
+        novo_super_bloco.offset = last_doc.offset + last_doc.size;
+    }
+    else
+        novo_super_bloco.offset = sizeof(SBlock);
+
+    fseek(arc, novo_super_bloco.offset, SEEK_SET);
     if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != lib->count){
         fclose(arc);
         fclose(doc);
         return -2;
     }
     fseek(arc, 0, SEEK_SET);
-    if(fwrite(&super_bloco.count, sizeof(int), 1, arc) != 1){
+    if(fwrite(&novo_super_bloco, sizeof(SBlock), 1, arc) != 1){
         fclose(arc);
         fclose(doc);
         return -2;
@@ -298,41 +308,37 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
     if(!arc)
         return -2;
 
-    SBlock super_bloco;
-    fseek(arc, 0, SEEK_SET);
-    if(fread(&super_bloco.count, sizeof(Document), 1, arc) != 1){
-        fclose(arc);
-        return -2;   
+    long total_offset;
+    if(lib->count > 0){
+        Document last_doc = lib->docs[lib->count - 1];
+        total_offset = last_doc.offset + last_doc.size;
     }
+    else
+        total_offset = sizeof(SBlock);
 
     long doc_size = lib->docs[index_removed].size;
-    long read_position = lib->docs[index_removed].offset + doc_size;
-    long write_position = read_position - doc_size;
-    long total_bytes_to_move = super_bloco.offset - read_position;
+    long start_read_position = lib->docs[index_removed].offset + doc_size;
+    long start_write_position = start_read_position - doc_size;
+    long total_bytes_to_move = total_offset - start_read_position;
     long bytes_moved = 0;
 
     // preenche o espaço deixado pelo documento removido
     while (bytes_moved < total_bytes_to_move){
-        char buffer[BUFFER_SIZE];
-
         long bytes_remaining = total_bytes_to_move - bytes_moved;
         long size_to_move = bytes_remaining > BUFFER_SIZE ? BUFFER_SIZE : bytes_remaining;
 
-        read_position += bytes_moved;
-        write_position += bytes_moved;
-        fseek(arc, read_position, SEEK_SET);
-        if(fread(buffer, 1, size_to_move, arc) != size_to_move){
-            fclose(arc);
-            return -2;
-        }
-        fseek(arc, write_position, SEEK_SET);
-        if(fwrite(buffer, 1, size_to_move, arc) != size_to_move){
+        long read_position = start_read_position + bytes_moved;
+        long write_position = start_write_position + bytes_moved;
+
+        if(move_bytes(arc, size_to_move, read_position, write_position) != 0){
             fclose(arc);
             return -2;
         }
 
         bytes_moved += size_to_move;
     }
+
+    fflush(arc);
 
     // atualiza os metadados dos demais documentos
     for (long i = index_removed; i < (lib->count - 1); i++){
@@ -341,29 +347,34 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
     }
     lib->count--;
 
-    Document *tmp_ptr;
-    if((lib->count > 0) && !(tmp_ptr = realloc(lib->docs, sizeof(Document) * lib->count))){
-        fclose(arc);
-        return -1;
+    if(lib->count > 0){
+        Document *tmp_ptr = realloc(lib->docs, sizeof(Document) * lib->count);
+        if(!tmp_ptr){
+            fclose(arc);
+            return -1;
+        }
+        lib->docs = tmp_ptr;
     }
-    lib->docs = tmp_ptr;    
 
-    super_bloco.count = lib->count;
-    super_bloco.offset -= doc_size;
+    SBlock novo_super_bloco;
+    novo_super_bloco.count = lib->count;
+    novo_super_bloco.offset = total_offset - doc_size;
 
     fseek(arc, 0, SEEK_SET);
-    if(fwrite(&super_bloco, sizeof(SBlock), 1, arc) != 1){
+    if(fwrite(&novo_super_bloco, sizeof(SBlock), 1, arc) != 1){
         fclose(arc);
         return -2;
     }
-    fseek(arc, super_bloco.offset, SEEK_SET);
+    fseek(arc, novo_super_bloco.offset, SEEK_SET);
     if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != lib->count){
         fclose(arc);
         return -2;   
     }
 
     int fd = fileno(arc);
-    ftruncate(fd, super_bloco.offset + sizeof(Document) * lib->count);
+    ftruncate(fd, novo_super_bloco.offset + sizeof(Document) * lib->count);
+
+    fclose(arc);
 
     return 0;
 }

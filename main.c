@@ -30,13 +30,12 @@ int main(int argc, char *argv[]) {
         gbv_list(&lib);
     } else if (strcmp(opcao, "-v") == 0 && argc >= 4) {
         gbv_view(&lib, biblioteca, argv[3]);
-    } else if (strcmp(opcao, "-o") == 0 && argc >= 4) {
-        gbv_order(&lib, biblioteca, argv[3]);
     } else {
         printf("Opção inválida.\n");
     }
 
     free(lib.docs);
+    lib.docs = NULL;
 
     return 0;
 }
