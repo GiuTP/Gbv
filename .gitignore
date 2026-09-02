@@ -1,4 +1,9 @@
-testes
-*.o
+bin/
+build/*.o
+*.tgz
+*.tar.gz
 *.gbv
-gbv
+vgcore.*
+.cache/
+compile_commands.json
+testes/

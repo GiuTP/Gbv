@@ -1,20 +1,41 @@
-CC = gcc
-CFLAGS = -Wall -g
+# Makefile - Padrão Modular C (DINF/UFPR)
+CC       = gcc
+CFLAGS   = -Wall -Wextra -Werror -g -std=c99 -I include
+MAIN     = gbv
+ENTREGA  = $(MAIN)
 
-all: gbv
+BINDIR   = bin
+BUILDDIR = build
+SRCDIR   = src
+INCDIR   = include
 
-gbv: main.o gbv.o util.o
-	$(CC) $(CFLAGS) -o gbv main.o gbv.o util.o
+# Lista de arquivos de cabeçalho
+HDR = $(wildcard $(INCDIR)/*.h)
 
-main.o: main.c gbv.h
-	$(CC) $(CFLAGS) -c main.c
+# Lista de arquivos-objeto gerados a partir do src/
+OBJ = $(BUILDDIR)/main.o \
+      $(BUILDDIR)/gbv.o \
+      $(BUILDDIR)/util.o
 
-gbv.o: gbv.c gbv.h
-	$(CC) $(CFLAGS) -c gbv.c
+# Construir o executável (alvo padrão)
+$(BINDIR)/$(MAIN): $(OBJ) | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^
 
-util.o: util.c util.h
-	$(CC) $(CFLAGS) -c util.c
+# Garante que os diretórios de saída existam
+$(BINDIR) $(BUILDDIR):
+	mkdir -p $@
 
+# Regra genérica para compilar fontes em objetos
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c $(HDR) | $(BUILDDIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Testar com Valgrind para checagem estrita de vazamento de memória
+valgrind: $(BINDIR)/$(MAIN)
+	valgrind --leak-check=full --track-origins=yes ./$(BINDIR)/$(MAIN)
+
+# Limpeza de binários e objetos
 clean:
-	rm -f *.o gbv
+	rm -f $(OBJ) $(BINDIR)/$(MAIN) $(ENTREGA).tgz
+	rm -rf $(BINDIR) $(BUILDDIR)
 
+.PHONY: run valgrind compile_commands tgz clean

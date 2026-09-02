@@ -1,7 +1,8 @@
+#define _POSIX_C_SOURCE 200809L
 #include "gbv.h"
 #include "util.h"   // format_date
 #include <stdio.h>  // rewind, fopen, fclose, fread, fwrite, fseek, ftell, printf, snprintf
-#include <stdlib.h> // realloc
+#include <stdlib.h> // realloc, malloc, free
 #include <string.h> // strcmp
 #include <unistd.h> // fileno, ftruncate
 
@@ -51,10 +52,10 @@ int move_bytes(FILE *arc, long size_move, long read_position, long write_positio
     char buffer[BUFFER_SIZE];
 
     fseek(arc, read_position, SEEK_SET);
-    if(fread(buffer, 1, size_move, arc) != size_move)
+    if(fread(buffer, 1, size_move, arc) != (size_t)size_move)
         return -1;
     fseek(arc, write_position, SEEK_SET);
-    if(fwrite(buffer, 1, size_move, arc) != size_move)
+    if(fwrite(buffer, 1, size_move, arc) != (size_t)size_move)
         return -1;
 
     return 0;
@@ -115,7 +116,7 @@ int gbv_open(Library *lib, const char *filename){
 
     lib->count = super_bloco.count;
     fseek(arc, super_bloco.offset, SEEK_SET);
-    if(fread(lib->docs, sizeof(Document), super_bloco.count, arc) != super_bloco.count){
+    if(fread(lib->docs, sizeof(Document), super_bloco.count, arc) != (size_t)super_bloco.count){
         fclose(arc);
         return -1;
     }
@@ -266,7 +267,7 @@ int gbv_add(Library *lib, const char *archive, const char *docname){
         novo_super_bloco.offset = sizeof(SBlock);
 
     fseek(arc, novo_super_bloco.offset, SEEK_SET);
-    if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != lib->count){
+    if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != (size_t)lib->count){
         fclose(arc);
         fclose(doc);
         return -2;
@@ -366,7 +367,7 @@ int gbv_remove(Library *lib, const char *archive, const char *docname){
         return -2;
     }
     fseek(arc, novo_super_bloco.offset, SEEK_SET);
-    if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != lib->count){
+    if(fwrite(lib->docs, sizeof(Document), lib->count, arc) != (size_t)lib->count){
         fclose(arc);
         return -2;   
     }
