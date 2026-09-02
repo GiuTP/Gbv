@@ -68,7 +68,7 @@ O programa permite reunir múltiplos arquivos em um único contêiner `.gbv`, ar
 
 ---
 
-## ⏱ Fundamentação / Arquitetura
+## ⏱ Fundamentação
 
 O arquivo `.gbv` tem um layout binário fixo: um **superbloco** no início guarda o deslocamento (*offset*) onde começam os metadados e o número de documentos armazenados. Os bytes brutos de cada arquivo ficam contíguos logo após o superbloco, e a tabela de metadados (`Document[]`) ocupa o final do contêiner — sendo reescrita a cada operação.
 
@@ -90,7 +90,7 @@ Operações como `add` e `remove` realizam **deslocamento físico dos bytes** no
 
 ## 👥 Componentes
 
-| Entidade / Módulo | Atributos Principais | Descrição |
+| Entidade | Atributos Principais | Descrição |
 |---|---|---|
 | **`SBlock`** (superbloco) | `offset`, `count` | Cabeçalho do `.gbv`; registra onde começam os metadados e quantos documentos existem. Reescrito a cada operação. |
 | **`Document`** | `name[256]`, `size`, `date`, `offset` | Metadados de um arquivo agrupado: nome, tamanho em bytes, data de inserção e posição dos seus dados no contêiner. |
@@ -102,7 +102,7 @@ Operações como `add` e `remove` realizam **deslocamento físico dos bytes** no
 
 ## 🔄 Dinâmica e Fluxo de Execução
 
-| Etapa / Comando | Comportamento e Ações Executadas |
+| Comando | Comportamento |
 |---|---|
 | `gbv -a <lib> <doc...>` | Abre a biblioteca (criando se não existir), e para cada documento: se for novo, acrescenta seus bytes ao final dos dados e registra seus metadados; se já existir com mesmo nome, substitui no lugar — deslocando bytes vizinhos caso os tamanhos difiram. |
 | `gbv -r <lib> <doc>` | Localiza o documento na tabela, move fisicamente os bytes dos documentos posteriores para "fechar" o buraco deixado e reduz o tamanho do contêiner com `ftruncate`. |
